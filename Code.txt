@@ -1,0 +1,122 @@
+import csv
+from google.cloud import bigtable
+
+def main():
+    client = bigtable.Client(project="homework3-455720", admin=True)
+    instance = client.instance("ev-bigtable")
+    table = instance.table("ev-population")
+    batcher = table.mutations_batcher()
+
+    with open("Electric_Vehicle_Population_Data.csv", "r") as csvfile:
+        reader = csv.DictReader(csvfile)
+        for i, row in enumerate(reader):
+            try:
+                row_key = str(row["DOL Vehicle ID"]).encode()
+                direct_row = table.direct_row(row_key)
+
+                direct_row.set_cell("ev_info", b"make", row["Make"])
+                direct_row.set_cell("ev_info", b"model", row["Model"])
+                direct_row.set_cell("ev_info", b"model_year", row["Model Year"])
+                direct_row.set_cell("ev_info", b"electric_range", str(int(row["Electric Range"].strip() or 0)))
+                direct_row.set_cell("ev_info", b"city", row["City"])
+                direct_row.set_cell("ev_info", b"county", row["County"])
+
+                batcher.mutate(direct_row)
+
+                if i % 5000 == 0:
+                    batcher.flush()
+                    print(f"Processed {i} rows")
+
+            except Exception as e:
+                print(f"Error at row {i}: {e}")
+
+        batcher.flush()
+        print("Upload completed.")
+
+if __name__ == "__main__":
+    main()
+
+from flask import Flask
+from google.cloud import bigtable
+from google.cloud.bigtable import row_filters
+
+app = Flask(__name__)
+
+PROJECT_ID = "homework3-455720"
+INSTANCE_ID = "ev-bigtable"
+TABLE_ID = "ev-population"
+COLUMN_FAMILY = "ev_info"
+
+def get_bigtable_table():
+    client = bigtable.Client(project=PROJECT_ID, admin=True)
+    instance = client.instance(INSTANCE_ID)
+    return instance.table(TABLE_ID)
+
+@app.route('/rows')
+def count_rows():
+    table = get_bigtable_table()
+    count = 0
+    for row in table.read_rows():
+        count += 1
+    return str(count)
+
+
+@app.route('/Best-BMW')
+def best_bmw():
+    table = get_bigtable_table()
+    bmw_filter = row_filters.RowFilterChain(filters=[
+        row_filters.ColumnQualifierRegexFilter(b"make"),
+        row_filters.ValueRegexFilter(b"BMW"),
+        row_filters.ColumnQualifierRegexFilter(b"electric_range"),
+        row_filters.ValueRangeFilter(start_value=str(101).encode("utf-8"))
+    ])
+    count = sum(1 for row in table.read_rows(filter_=bmw_filter))
+    return str(count)
+
+@app.route('/tesla-owners')
+def tesla_seattle():
+    table = get_bigtable_table() 
+    seattle_filter = row_filters.RowFilterChain(filters=[
+        row_filters.ColumnQualifierRegexFilter(b"make"),
+        row_filters.ValueRegexFilter(b"Tesla"),
+        row_filters.ColumnQualifierRegexFilter(b"city"),
+        row_filters.ValueRegexFilter(b"Seattle")
+    ])
+    count = 0
+    for row in table.read_rows(filter_=seattle_filter):
+        count += 1
+    return str(count)
+
+@app.route('/update')
+def update_range():
+    table = get_bigtable_table()
+    target_id = "257246118"
+    row_key = str(target_id).encode()
+    row = table.read_row(row_key)
+    if not row:
+        return "Record not found", 404
+    direct_row = table.direct_row(row_key)
+    direct_row.set_cell(COLUMN_FAMILY, b"electric_range", str(200).encode("utf-8"))
+    direct_row.commit()
+    return "Success"
+
+@app.route('/delete')
+def delete_old():
+    table = get_bigtable_table()
+    batcher = table.mutations_batcher()
+    total = 0
+    deleted_count = 0
+    for row in table.read_rows():
+        total += 1
+        year_cell = row.cells[COLUMN_FAMILY].get(b"model_year")
+        if year_cell and int(year_cell[0].value) < 2014:
+            direct_row = table.direct_row(row.row_key)
+            direct_row.delete()
+            batcher.mutate(direct_row)
+            deleted_count += 1
+    batcher.flush()
+    remaining = total - deleted_count
+    return str(remaining)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
