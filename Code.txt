@@ -14,10 +14,14 @@ def main():
                 row_key = str(row["DOL Vehicle ID"]).encode()
                 direct_row = table.direct_row(row_key)
 
+
+                electric_range = int(row["Electric Range"].strip() or 0)
+                electric_range_str = f"{electric_range:05d}"  # e.g., 100 → "00100"
+
                 direct_row.set_cell("ev_info", b"make", row["Make"])
                 direct_row.set_cell("ev_info", b"model", row["Model"])
                 direct_row.set_cell("ev_info", b"model_year", row["Model Year"])
-                direct_row.set_cell("ev_info", b"electric_range", str(int(row["Electric Range"].strip() or 0)))
+                direct_row.set_cell("ev_info", b"electric_range", electric_range_str.encode())
                 direct_row.set_cell("ev_info", b"city", row["City"])
                 direct_row.set_cell("ev_info", b"county", row["County"])
 
@@ -37,7 +41,12 @@ if __name__ == "__main__":
     main()
 
 
- from flask import Flask
+
+
+
+
+
+from flask import Flask
 from google.cloud import bigtable
 from google.cloud.bigtable import row_filters
 
@@ -47,10 +56,6 @@ PROJECT_ID = "homework3-455720"
 INSTANCE_ID = "ev-bigtable"
 TABLE_ID = "ev-population"
 COLUMN_FAMILY = "ev_info"
-
-@app.route('/ping')
-def ping():
-    return "pong"
 
 def get_bigtable_table():
     client = bigtable.Client(project=PROJECT_ID, admin=True)
@@ -67,44 +72,51 @@ def count_rows():
 
 @app.route('/Best-BMW')
 def best_bmw():
-    table = get_bigtable_table()
-    # Filter for BMW make and electric_range > 100
-    bmw_filter = row_filters.ConditionalRowFilter(
-        predicate_filter=row_filters.RowFilterChain(filters=[
-            row_filters.ColumnQualifierRegexFilter(b"make"),
-            row_filters.ValueRegexFilter(b"BMW")
-        ]),
-        true_filter=row_filters.RowFilterChain(filters=[
-            row_filters.ColumnQualifierRegexFilter(b"electric_range"),
-            row_filters.ValueRangeFilter(start_value=b"101")
-        ])
-    )
-    count = 0
-    for row in table.read_rows(filter_=bmw_filter):
-        count += 1
-    return str(count)
+    try:
+        table = get_bigtable_table()
 
+        bmw_filter = row_filters.RowFilterChain(filters=[
+            row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
+            row_filters.InterleaveFilters(filters=[
+                row_filters.RowFilterChain(filters=[
+                    row_filters.ColumnQualifierRegexFilter(b"make"),
+                    row_filters.ValueRegexFilter(b"BMW")
+                ]),
+                row_filters.RowFilterChain(filters=[
+                    row_filters.ColumnQualifierRegexFilter(b"electric_range"),
+                    row_filters.ValueRangeFilter(start_value=b"00101")  # "00101" = 101
+                ])
+            ])
+        ])
+        count = sum(1 for _ in table.read_rows(filter_=bmw_filter))
+        return str(count)
+    except Exception as e:
+        return f"Error: {str(e)}", 500
 
 @app.route('/tesla-owners')
 def tesla_seattle():
-    table = get_bigtable_table()
-    # Filter for Tesla make and Seattle city
-    seattle_filter = row_filters.ConditionalRowFilter(
-        predicate_filter=row_filters.RowFilterChain(filters=[
-            row_filters.ColumnQualifierRegexFilter(b"make"),
-            row_filters.ValueRegexFilter(b"Tesla")
-        ]),
-        true_filter=row_filters.RowFilterChain(filters=[
-            row_filters.ColumnQualifierRegexFilter(b"city"),
-            row_filters.ValueRegexFilter(b"Seattle")
+    try:
+        table = get_bigtable_table()
+        # Combine filters for Tesla and Seattle
+        seattle_filter = row_filters.RowFilterChain(filters=[
+            row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
+            row_filters.InterleaveFilters(filters=[
+                # Make = Tesla
+                row_filters.RowFilterChain(filters=[
+                    row_filters.ColumnQualifierRegexFilter(b"make"),
+                    row_filters.ValueRegexFilter(b"Tesla")
+                ]),
+                # City = Seattle
+                row_filters.RowFilterChain(filters=[
+                    row_filters.ColumnQualifierRegexFilter(b"city"),
+                    row_filters.ValueRegexFilter(b"Seattle")
+                ])
+            ])
         ])
-    )
-    count = 0
-    for row in table.read_rows(filter_=seattle_filter):
-        count += 1
-    return str(count)
-
-
+        count = sum(1 for _ in table.read_rows(filter_=seattle_filter))
+        return str(count)
+    except Exception as e:
+   
 @app.route('/update')
 def update_range():
     table = get_bigtable_table()
