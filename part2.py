@@ -26,28 +26,42 @@ def count_rows():
 @app.route('/Best-BMW')
 def best_bmw():
     table = get_bigtable_table()
-    bmw_filter = row_filters.RowFilterChain(filters=[
-        row_filters.ColumnQualifierRegexFilter(b"make"),
-        row_filters.ValueRegexFilter(b"BMW"),
-        row_filters.ColumnQualifierRegexFilter(b"electric_range"),
-        row_filters.ValueRangeFilter(start_value=str(101).encode("utf-8"))
-    ])
-    count = sum(1 for row in table.read_rows(filter_=bmw_filter))
+    # Filter for BMW make and electric_range > 100
+    bmw_filter = row_filters.ConditionalRowFilter(
+        predicate_filter=row_filters.RowFilterChain(filters=[
+            row_filters.ColumnQualifierRegexFilter(b"make"),
+            row_filters.ValueRegexFilter(b"BMW")
+        ]),
+        true_filter=row_filters.RowFilterChain(filters=[
+            row_filters.ColumnQualifierRegexFilter(b"electric_range"),
+            row_filters.ValueRangeFilter(start_value=b"101")
+        ])
+    )
+    count = 0
+    for row in table.read_rows(filter_=bmw_filter):
+        count += 1
     return str(count)
+
 
 @app.route('/tesla-owners')
 def tesla_seattle():
-    table = get_bigtable_table() 
-    seattle_filter = row_filters.RowFilterChain(filters=[
-        row_filters.ColumnQualifierRegexFilter(b"make"),
-        row_filters.ValueRegexFilter(b"Tesla"),
-        row_filters.ColumnQualifierRegexFilter(b"city"),
-        row_filters.ValueRegexFilter(b"Seattle")
-    ])
+    table = get_bigtable_table()
+    # Filter for Tesla make and Seattle city
+    seattle_filter = row_filters.ConditionalRowFilter(
+        predicate_filter=row_filters.RowFilterChain(filters=[
+            row_filters.ColumnQualifierRegexFilter(b"make"),
+            row_filters.ValueRegexFilter(b"Tesla")
+        ]),
+        true_filter=row_filters.RowFilterChain(filters=[
+            row_filters.ColumnQualifierRegexFilter(b"city"),
+            row_filters.ValueRegexFilter(b"Seattle")
+        ])
+    )
     count = 0
     for row in table.read_rows(filter_=seattle_filter):
         count += 1
     return str(count)
+
 
 @app.route('/update')
 def update_range():
