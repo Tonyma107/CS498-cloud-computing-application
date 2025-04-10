@@ -44,8 +44,6 @@ if __name__ == "__main__":
 
 
 
-
-
 from flask import Flask
 from google.cloud import bigtable
 from google.cloud.bigtable import row_filters
@@ -75,20 +73,30 @@ def best_bmw():
     try:
         table = get_bigtable_table()
 
+        # Create a filter for BMWs with range > 100
+        make_filter = row_filters.ColumnQualifierRegexFilter(b"make")
+        make_value_filter = row_filters.ValueRegexFilter(b"BMW")
+        range_filter = row_filters.ColumnQualifierRegexFilter(b"electric_range")
+        range_value_filter = row_filters.ValueRangeFilter(start_value=b"00101")  # Range > 100
+        
+        # Chain the filters
         bmw_filter = row_filters.RowFilterChain(filters=[
             row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
-            row_filters.InterleaveFilters(filters=[
-                row_filters.RowFilterChain(filters=[
-                    row_filters.ColumnQualifierRegexFilter(b"make"),
-                    row_filters.ValueRegexFilter(b"BMW")
-                ]),
-                row_filters.RowFilterChain(filters=[
-                    row_filters.ColumnQualifierRegexFilter(b"electric_range"),
-                    row_filters.ValueRangeFilter(start_value=b"00101")  # "00101" = 101
-                ])
+            row_filters.RowFilterChain(filters=[
+                make_filter,
+                make_value_filter
+            ]),
+            row_filters.RowFilterChain(filters=[
+                range_filter,
+                range_value_filter
             ])
         ])
-        count = sum(1 for _ in table.read_rows(filter_=bmw_filter))
+        
+        # Count the matching rows
+        count = 0
+        for row in table.read_rows(filter_=bmw_filter):
+            count += 1
+        
         return str(count)
     except Exception as e:
         return f"Error: {str(e)}", 500
@@ -97,26 +105,35 @@ def best_bmw():
 def tesla_seattle():
     try:
         table = get_bigtable_table()
-        # Combine filters for Tesla and Seattle
-        seattle_filter = row_filters.RowFilterChain(filters=[
+        
+        # Create filters for Tesla vehicles in Seattle
+        make_filter = row_filters.ColumnQualifierRegexFilter(b"make")
+        make_value_filter = row_filters.ValueRegexFilter(b"Tesla")
+        city_filter = row_filters.ColumnQualifierRegexFilter(b"city")
+        city_value_filter = row_filters.ValueRegexFilter(b"Seattle")
+        
+        # Chain the filters
+        tesla_seattle_filter = row_filters.RowFilterChain(filters=[
             row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
-            row_filters.InterleaveFilters(filters=[
-                # Make = Tesla
-                row_filters.RowFilterChain(filters=[
-                    row_filters.ColumnQualifierRegexFilter(b"make"),
-                    row_filters.ValueRegexFilter(b"Tesla")
-                ]),
-                # City = Seattle
-                row_filters.RowFilterChain(filters=[
-                    row_filters.ColumnQualifierRegexFilter(b"city"),
-                    row_filters.ValueRegexFilter(b"Seattle")
-                ])
+            row_filters.RowFilterChain(filters=[
+                make_filter,
+                make_value_filter
+            ]),
+            row_filters.RowFilterChain(filters=[
+                city_filter,
+                city_value_filter
             ])
         ])
-        count = sum(1 for _ in table.read_rows(filter_=seattle_filter))
+        
+        # Count the matching rows
+        count = 0
+        for row in table.read_rows(filter_=tesla_seattle_filter):
+            count += 1
+        
         return str(count)
     except Exception as e:
-   
+        return f"Error: {str(e)}", 500
+
 @app.route('/update')
 def update_range():
     table = get_bigtable_table()
@@ -126,7 +143,8 @@ def update_range():
     if not row:
         return "Record not found", 404
     direct_row = table.direct_row(row_key)
-    direct_row.set_cell(COLUMN_FAMILY, b"electric_range", str(200).encode("utf-8"))
+    # Make sure the format matches how you stored it initially (e.g., "00200")
+    direct_row.set_cell(COLUMN_FAMILY, b"electric_range", b"00200")
     direct_row.commit()
     return "Success"
 
@@ -136,14 +154,17 @@ def delete_old():
     batcher = table.mutations_batcher()
     total = 0
     deleted_count = 0
+    
+    # First pass to count total rows
     for row in table.read_rows():
         total += 1
-        year_cell = row.cells[COLUMN_FAMILY].get(b"model_year")
-        if year_cell and int(year_cell[0].value) < 2014:
+        year_cell = row.cells[COLUMN_FAMILY][b"model_year"][0].value
+        if year_cell and year_cell.decode('utf-8') < "2014":
             direct_row = table.direct_row(row.row_key)
             direct_row.delete()
             batcher.mutate(direct_row)
             deleted_count += 1
+    
     batcher.flush()
     remaining = total - deleted_count
     return str(remaining)
