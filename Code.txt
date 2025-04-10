@@ -2,7 +2,7 @@ import csv
 from google.cloud import bigtable
 
 def main():
-    client = bigtable.Client(project="homework3-455720", admin=True)
+    client = bigtable.Client(project="homework3-please", admin=True)
     instance = client.instance("ev-bigtable")
     table = instance.table("ev-population")
     batcher = table.mutations_batcher()
@@ -78,8 +78,6 @@ def best_bmw():
         make_value_filter = row_filters.ValueRegexFilter(b"BMW")
         range_filter = row_filters.ColumnQualifierRegexFilter(b"electric_range")
         range_value_filter = row_filters.ValueRangeFilter(start_value=b"00101")  # Range > 100
-        
-        # Chain the filters
         bmw_filter = row_filters.RowFilterChain(filters=[
             row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
             row_filters.RowFilterChain(filters=[
@@ -91,6 +89,8 @@ def best_bmw():
                 range_value_filter
             ])
         ])
+
+
         
         # Count the matching rows
         count = 0
@@ -160,8 +160,6 @@ def delete_old():
         total += 1
         year_cell = row.cells[COLUMN_FAMILY][b"model_year"][0].value
         if year_cell and year_cell.decode('utf-8') < "2014":
-            direct_row = table.direct_row(row.row_key)
-            direct_row.delete()
             batcher.mutate(direct_row)
             deleted_count += 1
     
@@ -171,3 +169,11 @@ def delete_old():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+
+
+            # direct_row = table.direct_row(row.row_key)
+            # direct_row.delete()
+
+
+
+
