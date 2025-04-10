@@ -2,28 +2,33 @@ import csv
 from google.cloud import bigtable
 
 def main():
+    # Initialize Bigtable client and table reference
     client = bigtable.Client(project="homework3-please", admin=True)
     instance = client.instance("ev-bigtable")
     table = instance.table("ev-population")
     batcher = table.mutations_batcher()
 
-    with open("Electric_Vehicle_Population_Data.csv", "r") as csvfile:
+    # Open with UTF-8 encoding
+    with open("Electric_Vehicle_Population_Data.csv", "r", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile)
+
         for i, row in enumerate(reader):
             try:
+                # Use DOL Vehicle ID as row key
                 row_key = str(row["DOL Vehicle ID"]).encode()
                 direct_row = table.direct_row(row_key)
 
+                # Convert electric range to zero-padded 5-digit string
+                electric_range = int(row.get("Electric Range", "0").strip() or 0)
+                electric_range_str = f"{electric_range:05d}"
 
-                electric_range = int(row["Electric Range"].strip() or 0)
-                electric_range_str = f"{electric_range:05d}"  # e.g., 100 → "00100"
-
-                direct_row.set_cell("ev_info", b"make", row["Make"])
-                direct_row.set_cell("ev_info", b"model", row["Model"])
-                direct_row.set_cell("ev_info", b"model_year", row["Model Year"])
-                direct_row.set_cell("ev_info", b"electric_range", electric_range_str.encode())
-                direct_row.set_cell("ev_info", b"city", row["City"])
-                direct_row.set_cell("ev_info", b"county", row["County"])
+                # Set Bigtable cells (UTF-8 encoded)
+                direct_row.set_cell("ev_info", b"make", row.get("Make", "").encode("utf-8"))
+                direct_row.set_cell("ev_info", b"model", row.get("Model", "").encode("utf-8"))
+                direct_row.set_cell("ev_info", b"model_year", row.get("Model Year", "").encode("utf-8"))
+                direct_row.set_cell("ev_info", b"electric_range", electric_range_str.encode("utf-8"))
+                direct_row.set_cell("ev_info", b"city", row.get("City", "").encode("utf-8"))
+                direct_row.set_cell("ev_info", b"county", row.get("County", "").encode("utf-8"))
 
                 batcher.mutate(direct_row)
 
@@ -40,17 +45,13 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-
-
-
 from flask import Flask
 from google.cloud import bigtable
 from google.cloud.bigtable import row_filters
 
 app = Flask(__name__)
 
-PROJECT_ID = "homework3-455720"
+PROJECT_ID = "homework3-please"
 INSTANCE_ID = "ev-bigtable"
 TABLE_ID = "ev-population"
 COLUMN_FAMILY = "ev_info"
@@ -70,69 +71,40 @@ def count_rows():
 
 @app.route('/Best-BMW')
 def best_bmw():
-    try:
-        table = get_bigtable_table()
+    table = get_bigtable_table()
+    count = 0
+    for row in table.read_rows():
+        cells = row.cells.get(COLUMN_FAMILY, {})
+        make_cell = cells.get(b"make", [None])[0]
+        range_cell = cells.get(b"electric_range", [None])[0]
+        if make_cell and range_cell:
+            try:
+                make_value = make_cell.value.decode("utf-8")
+                range_value = int(range_cell.value.decode("utf-8"))
+            except Exception:
+                continue
+            if make_value == "BMW" and range_value > 100:
+                count += 1
+    return str(count)
 
-        # Create a filter for BMWs with range > 100
-        make_filter = row_filters.ColumnQualifierRegexFilter(b"make")
-        make_value_filter = row_filters.ValueRegexFilter(b"BMW")
-        range_filter = row_filters.ColumnQualifierRegexFilter(b"electric_range")
-        range_value_filter = row_filters.ValueRangeFilter(start_value=b"00101")  # Range > 100
-        bmw_filter = row_filters.RowFilterChain(filters=[
-            row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
-            row_filters.RowFilterChain(filters=[
-                make_filter,
-                make_value_filter
-            ]),
-            row_filters.RowFilterChain(filters=[
-                range_filter,
-                range_value_filter
-            ])
-        ])
-
-
-        
-        # Count the matching rows
-        count = 0
-        for row in table.read_rows(filter_=bmw_filter):
-            count += 1
-        
-        return str(count)
-    except Exception as e:
-        return f"Error: {str(e)}", 500
 
 @app.route('/tesla-owners')
 def tesla_seattle():
-    try:
-        table = get_bigtable_table()
-        
-        # Create filters for Tesla vehicles in Seattle
-        make_filter = row_filters.ColumnQualifierRegexFilter(b"make")
-        make_value_filter = row_filters.ValueRegexFilter(b"Tesla")
-        city_filter = row_filters.ColumnQualifierRegexFilter(b"city")
-        city_value_filter = row_filters.ValueRegexFilter(b"Seattle")
-        
-        # Chain the filters
-        tesla_seattle_filter = row_filters.RowFilterChain(filters=[
-            row_filters.FamilyNameRegexFilter(COLUMN_FAMILY),
-            row_filters.RowFilterChain(filters=[
-                make_filter,
-                make_value_filter
-            ]),
-            row_filters.RowFilterChain(filters=[
-                city_filter,
-                city_value_filter
-            ])
-        ])
-        
-        # Count the matching rows
-        count = 0
-        for row in table.read_rows(filter_=tesla_seattle_filter):
-            count += 1
-        
-        return str(count)
-    except Exception as e:
-        return f"Error: {str(e)}", 500
+    table = get_bigtable_table()
+    count = 0
+    for row in table.read_rows():
+        cells = row.cells.get(COLUMN_FAMILY, {})
+        make_cell = cells.get(b"make", [None])[0]
+        city_cell = cells.get(b"city", [None])[0]
+        if make_cell and city_cell:
+            try:
+                make_value = make_cell.value.decode("utf-8").lower().strip()
+                city_value = city_cell.value.decode("utf-8").lower().strip()
+            except Exception:
+                continue
+            if "tesla" in make_value and "seattle" in city_value:
+                count += 1
+    return str(count)
 
 @app.route('/update')
 def update_range():
@@ -143,7 +115,6 @@ def update_range():
     if not row:
         return "Record not found", 404
     direct_row = table.direct_row(row_key)
-    # Make sure the format matches how you stored it initially (e.g., "00200")
     direct_row.set_cell(COLUMN_FAMILY, b"electric_range", b"00200")
     direct_row.commit()
     return "Success"
@@ -151,29 +122,36 @@ def update_range():
 @app.route('/delete')
 def delete_old():
     table = get_bigtable_table()
-    batcher = table.mutations_batcher()
     total = 0
     deleted_count = 0
     
-    # First pass to count total rows
+    # Collect rows to delete
+    rows_to_delete = []
+    
     for row in table.read_rows():
         total += 1
-        year_cell = row.cells[COLUMN_FAMILY][b"model_year"][0].value
-        if year_cell and year_cell.decode('utf-8') < "2014":
-            batcher.mutate(direct_row)
-            deleted_count += 1
+        cells = row.cells.get(COLUMN_FAMILY, {})
+        year_cell = cells.get(b"model_year", [None])[0]
+        
+        if year_cell:
+            try:
+                year_value = year_cell.value.decode("utf-8").strip()
+                if year_value < "2014":
+                    rows_to_delete.append(row.row_key)
+                    deleted_count += 1
+            except Exception:
+                continue
     
-    batcher.flush()
+    # Delete collected rows
+    for row_key in rows_to_delete:
+        row = table.direct_row(row_key)
+        row.delete()
+        row.commit()
+    
     remaining = total - deleted_count
     return str(remaining)
 
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
-
-
-            # direct_row = table.direct_row(row.row_key)
-            # direct_row.delete()
-
-
-
 
