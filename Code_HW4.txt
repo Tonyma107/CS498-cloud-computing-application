@@ -1,0 +1,133 @@
+
+from pyspark.sql import SparkSession, Row
+
+def parse_line(line: str):
+    if not line.startswith("searchTerm:"):
+        return []
+    rem = line[len("searchTerm:"):].strip()
+
+    # handle quoted term
+    if rem and rem[0] in ("‘", "’", "'", '"'):
+        open_q = rem[0]
+        close_q = {"‘": "’", "’": "‘", "'": "'", '"': '"'}[open_q]
+        idx = rem.find(close_q, 1)
+        if idx != -1:
+            term = rem[1:idx]
+            rest = rem[idx+1:].lstrip(", ").strip()
+        else:
+            # fallback if no closing quote found
+            term, rest = rem.split(",", 1)
+            term = term.strip()
+            rest = rest.strip()
+    else:
+        term, rest = rem.split(",", 1)
+        term = term.strip()
+        rest = rest.strip()
+
+    rows = []
+    for chunk in rest.split("~"):
+        chunk = chunk.strip()
+        if ":" not in chunk:
+            continue
+        url, clicks = chunk.rsplit(":", 1)
+        try:
+            clicks = int(clicks.strip())
+        except ValueError:
+            continue
+        rows.append(Row(term=term,
+                        url=url.strip(),
+                        clicks=clicks))
+    return rows
+
+if __name__ == "__main__":
+    spark = (SparkSession.builder
+             .appName("Search‑log preprocess")
+             .getOrCreate())
+    sc = spark.sparkContext
+
+    lines   = sc.textFile("searchLog.csv")
+    rows_rdd = lines.flatMap(parse_line)
+    df      = spark.createDataFrame(rows_rdd)
+
+    df.write.mode("overwrite").json("processed_data")
+    spark.stop()
+
+
+
+
+
+from flask import Flask, request, jsonify, Response
+import glob, json
+from collections import defaultdict, OrderedDict
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, sum as spark_sum
+
+app = Flask(__name__)
+app.config['JSON_SORT_KEYS'] = False
+
+spark = SparkSession.builder.appName("Search Analytics API").getOrCreate()
+df = spark.read.json("processed_data")
+df.cache()
+df.createOrReplaceTempView("search_data")
+
+records = []
+for fn in glob.glob("processed_data/part-*.json"):
+    with open(fn) as f:
+        for line in f:
+            records.append(json.loads(line))
+
+def domain_prio(url):
+    if url.endswith(".org"): return 0
+    if url.endswith(".edu"): return 1
+    if url.endswith(".com"): return 2
+    return 3
+
+@app.route('/results', methods=['POST'])
+def get_results():
+    data = request.get_json() or {}
+    term = data.get('term')
+    if not term:
+        return jsonify({"error": "Missing 'term'"}), 400
+    counts = defaultdict(int)
+    for r in records:
+        if r['term'] == term:
+            counts[r['url']] += r['clicks']
+    items = sorted(counts.items(), key=lambda x: (-x[1], domain_prio(x[0])))
+    od = OrderedDict(items)
+    return Response(json.dumps({"results": od}), mimetype='application/json')
+
+@app.route('/trends', methods=['POST'])
+def get_trends():
+    data = request.get_json()
+    if 'term' not in data:
+        return jsonify({"error": "Missing 'term' in request"}), 400
+    search_term = data['term']
+    total_clicks = df.filter(col("term") == search_term).agg(spark_sum("clicks").alias("total")).collect()[0]["total"] or 0
+    return jsonify({"clicks": total_clicks})
+
+@app.route('/popularity', methods=['POST'])
+def get_popularity():
+    data = request.get_json()
+    if 'url' not in data:
+        return jsonify({"error": "Missing 'url' in request"}), 400
+    url = data['url']
+    total_clicks = df.filter(col("url") == url).agg(spark_sum("clicks").alias("total")).collect()[0]["total"] or 0
+    return jsonify({"clicks": total_clicks})
+
+@app.route('/getBestTerms', methods=['POST'])
+def get_best_terms():
+    data = request.get_json()
+    if 'website' not in data:
+        return jsonify({"error": "Missing 'website' in request"}), 400
+    website = data['website']
+    total_website_clicks = df.filter(col("url") == website).agg(spark_sum("clicks").alias("total")).collect()[0]["total"] or 0
+    if total_website_clicks == 0:
+        return jsonify({"best_terms": []})
+    term_clicks = df.filter(col("url") == website).select("term", "clicks").collect()
+    threshold = 0.05 * total_website_clicks
+    best_terms = [row['term'] for row in term_clicks if row['clicks'] > threshold]
+    best_terms.sort(key=lambda t: next(r['clicks'] for r in term_clicks if r['term'] == t), reverse=True)
+    return jsonify({"best_terms": best_terms})
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
